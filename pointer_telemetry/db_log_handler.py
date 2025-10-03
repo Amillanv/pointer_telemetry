@@ -21,14 +21,18 @@ class DBLogHandler(logging.Handler):
         """
         Returns (session, ctx) where ctx is an app context to pop later if we had to push one.
         """
+        ctx = None
         if has_app_context():
-            return self.db.session, None
-        # push an app context so db.session works outside requests
-        ctx = self.app.app_context()
-        ctx.push()
-        return self.db.session, ctx
+            ctx = self.app.app_context()
+            ctx.push()
+
+        session = self.db.create_scoped_session(options={"expire_on_commit": False})
+        return session, ctx
     
     def emit(self, record: logging.LogRecord):
+        if record.levelno < logging.WARNING:
+            return
+        
         try:
             # Message / exception
             msg = self.format(record)
@@ -92,6 +96,7 @@ class DBLogHandler(logging.Handler):
                     pass
                 print(f"[DBLogHandler] failed to write ErrorLog: {err}", file=sys.stderr)
             finally:
+                session.remove()
                 if ctx is not None:
                     ctx.pop()
 

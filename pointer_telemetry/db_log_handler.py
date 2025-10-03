@@ -5,17 +5,16 @@ from datetime import datetime, timezone
 from .errorlog import make_error_logger
 from .context import message_template, stack_top_frames
 
+
 class DBLogHandler(logging.Handler):
-    def __init__(self, db_session, ErrorLogModel, *, service, environment, release_version=None, build_sha=None, level=logging.INFO):
+    def __init__(self, db, ErrorLogModel, *, service, environment, release_version=None, build_sha=None, level=logging.INFO):
         super().__init__(level=level)
-        self._log_error = make_error_logger(
-            db_session=db_session,
-            ErrorLogModel=ErrorLogModel,
-            service=service,
-            environment=environment,
-            release_version=release_version,
-            build_sha=build_sha,
-        )
+        self.db = db
+        self.ErrorLogModel = ErrorLogModel
+        self.service = service
+        self.environment = environment
+        self.release_version = release_version
+        self.build_sha = build_sha
 
     def emit(self, record: logging.LogRecord):
         try:
@@ -51,24 +50,25 @@ class DBLogHandler(logging.Handler):
             level = record.levelname.upper()
 
             # Write to ErrorLog
-            self._log_error(
-                message=msg,
-                level=level if level in ("ERROR","WARNING","INFO") else "ERROR",
-                stack_trace=stack,
-                route=route,
-                function_name=function_name,
-                http_method=http_method,
-                http_status=http_status,
-                latency_ms=getattr(record, "latency_ms", None),
-                vet_id=vet_id, dog_id=dog_id,
-                request_id=request_id,
-                tags=getattr(record, "tags", None),
-            )
+            with self.db.session() as session:
+                error = self.ErrorLogModel(
+                    message=msg,
+                    level=level,
+                    stack_trace=stack,
+                    route=route,
+                    function_name=function_name,
+                    http_method=http_method,
+                    vet_id=vet_id,
+                    dog_id=dog_id,
+                    request_id=request_id,
+                    service=self.service,
+                    environment=self.environment,
+                    release_version=self.release_version,
+                    build_sha=self.build_sha,
+                )
+                session.add(error)
+                session.commit()
+
         except Exception as err:
-            try:
-                self.db_session.rollback()
-            except Exception:
-                pass
-            # TEMP while validating: print to stderr so you see handler failures
             import sys
             print(f"[DBLogHandler] failed to write ErrorLog: {err}", file=sys.stderr)

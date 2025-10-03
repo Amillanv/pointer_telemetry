@@ -4,7 +4,7 @@ from flask import has_request_context, request, has_app_context
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime, timezone
 from .errorlog import make_error_logger
-from .context import message_template, stack_top_frames
+from .context import message_template, stack_top_frames, error_fingerprint
 
 
 class DBLogHandler(logging.Handler):
@@ -51,12 +51,31 @@ class DBLogHandler(logging.Handler):
             level = record.levelname.upper()
             if level not in ("ERROR", "WARNING"):
                 level = "ERROR"
+                
+            msg_t = message_template(msg)
+            frames = stack_top_frames(stack)
+            exc_type = None
+            if stack and "Traceback" in stack:
+                # best-effort, you can pass exc_type explicitly if you want
+                try:
+                    exc_type = stack.strip().splitlines()[-1].split(":")[0].strip()
+                except Exception:
+                    exc_type = None
 
+            fp = error_fingerprint(
+                exc_type or (function_name or "UnknownError"),
+                msg_t,
+                frames,
+                self.service,
+                self.release_version or ""
+            )
+                
             session = self.Session()
             try:
                 row = self.ErrorLogModel(
                     level=level,
                     message=msg[:10000],
+                    message_template=msg_t,
                     stack_trace=stack,
                     route=route,
                     function_name=function_name,
@@ -70,6 +89,7 @@ class DBLogHandler(logging.Handler):
                     release_version=self.release_version,
                     build_sha=self.build_sha,
                     tags=tags,
+                    fingerprint=fp,
                 )
                 session.add(row)
                 session.commit()

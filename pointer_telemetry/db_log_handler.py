@@ -29,6 +29,11 @@ class DBLogHandler(logging.Handler):
             stack = "".join(traceback.format_exception(*record.exc_info)) if record.exc_info else None
 
             route = function_name = http_method = None
+            http_status      = getattr(record, "http_status", None)
+            session_id       = getattr(record, "session_id", None)
+            host             = getattr(record, "host", None)
+            service_component= getattr(record, "service_component", None)
+            message_params   = getattr(record, "message_params", None)
             request_id = getattr(record, "request_id", None)
             vet_id     = getattr(record, "vet_id", None)
             dog_id     = getattr(record, "dog_id", None)
@@ -80,10 +85,15 @@ class DBLogHandler(logging.Handler):
                     route=route,
                     function_name=function_name,
                     http_method=http_method,
+                    http_status=http_status,
                     latency_ms=latency_ms,
                     vet_id=vet_id,
                     dog_id=dog_id,
                     request_id=request_id,
+                    session_id=session_id,
+                    host=host,
+                    service_component=service_component,
+                    message_params=message_params,
                     service=self.service,
                     environment=self.environment,
                     release_version=self.release_version,

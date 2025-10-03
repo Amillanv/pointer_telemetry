@@ -1,94 +1,78 @@
 # pointer_telemetry/db_log_handler.py
 import logging, traceback, sys
 from flask import has_request_context, request, has_app_context
+from sqlalchemy.orm import sessionmaker
 from datetime import datetime, timezone
 from .errorlog import make_error_logger
 from .context import message_template, stack_top_frames
 
 
 class DBLogHandler(logging.Handler):
-    def __init__(self, app, db, ErrorLogModel, *, service, environment, release_version=None, build_sha=None, level=logging.INFO):
+    def __init__(self, *, engine, ErrorLogModel, service, environment,
+                 release_version=None, build_sha=None, level=logging.INFO):
         super().__init__(level=level)
-        self.app = app
-        self.db = db
+        # independent sessionmaker avoids touching Flask's db.session
+        self.Session = sessionmaker(bind=engine, expire_on_commit=False, future=True)
         self.ErrorLogModel = ErrorLogModel
         self.service = service
         self.environment = environment
         self.release_version = release_version
         self.build_sha = build_sha
-
-    def _get_session(self):
-        """
-        Returns (session, ctx) where ctx is an app context to pop later if we had to push one.
-        """
-        ctx = None
-        if has_app_context():
-            ctx = self.app.app_context()
-            ctx.push()
-
-        session = self.db.create_scoped_session(options={"expire_on_commit": False})
-        return session, ctx
     
     def emit(self, record: logging.LogRecord):
+        # fast reject below threshold (also set via setLevel)
         if record.levelno < logging.WARNING:
             return
-        
         try:
-            # Message / exception
-            msg = self.format(record)
-            stack = None
-            if record.exc_info:
-                stack = "".join(traceback.format_exception(*record.exc_info))
+            # Use getMessage() to avoid re-formatting exceptions twice
+            msg = record.getMessage()
+            stack = "".join(traceback.format_exception(*record.exc_info)) if record.exc_info else None
 
-            # Auto capture route + endpoint in Flask requests
             route = function_name = http_method = None
-            http_status = None
             request_id = getattr(record, "request_id", None)
-            vet_id    = getattr(record, "vet_id", None)
-            dog_id    = getattr(record, "dog_id", None)
+            vet_id     = getattr(record, "vet_id", None)
+            dog_id     = getattr(record, "dog_id", None)
+            latency_ms = getattr(record, "latency_ms", None)
+            tags       = getattr(record, "tags", None)
 
             if has_request_context():
                 try:
                     http_method = request.method
                     route = request.url_rule.rule if request.url_rule else request.path
-                    function_name = request.endpoint  # "blueprint.fn"
-                    # Let anyone attach request-scoped ids
+                    function_name = request.endpoint
                     request_id = request.headers.get("X-Request-ID", request_id)
                 except Exception:
                     pass
 
-            # If not in a request, try best-effort function from the traceback
             if not function_name and record.funcName:
-                # module:function
                 mod = record.module or (record.pathname.rsplit("/",1)[-1] if record.pathname else None)
                 function_name = f"{mod}.{record.funcName}" if mod else record.funcName
 
             level = record.levelname.upper()
-            level = level if level in ("ERROR","WARNING","INFO") else "ERROR"
+            if level not in ("ERROR", "WARNING"):
+                level = "ERROR"
 
-            session, ctx = self._get_session()
-            
+            session = self.Session()
             try:
-                
-                # Write to ErrorLog
-                with self.db.session() as session:
-                    error = self.ErrorLogModel(
-                        message=msg,
-                        level=level,
-                        stack_trace=stack,
-                        route=route,
-                        function_name=function_name,
-                        http_method=http_method,
-                        vet_id=vet_id,
-                        dog_id=dog_id,
-                        request_id=request_id,
-                        service=self.service,
-                        environment=self.environment,
-                        release_version=self.release_version,
-                        build_sha=self.build_sha,
-                    )
-                    session.add(error)
-                    session.commit()
+                row = self.ErrorLogModel(
+                    level=level,
+                    message=msg[:10000],
+                    stack_trace=stack,
+                    route=route,
+                    function_name=function_name,
+                    http_method=http_method,
+                    latency_ms=latency_ms,
+                    vet_id=vet_id,
+                    dog_id=dog_id,
+                    request_id=request_id,
+                    service=self.service,
+                    environment=self.environment,
+                    release_version=self.release_version,
+                    build_sha=self.build_sha,
+                    tags=tags,
+                )
+                session.add(row)
+                session.commit()
             except Exception as err:
                 try:
                     session.rollback()
@@ -96,9 +80,7 @@ class DBLogHandler(logging.Handler):
                     pass
                 print(f"[DBLogHandler] failed to write ErrorLog: {err}", file=sys.stderr)
             finally:
-                session.remove()
-                if ctx is not None:
-                    ctx.pop()
-
+                session.close()  # fully independent; no app context to pop
         except Exception as outer:
+            # never re-log inside a handler; just print to stderr
             print(f"[DBLogHandler] emit crash: {outer}", file=sys.stderr)

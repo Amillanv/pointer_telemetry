@@ -64,6 +64,11 @@ class DBLogHandler(logging.Handler):
                 request_id=request_id,
                 tags=getattr(record, "tags", None),
             )
-        except Exception:
-            # Never kill the app due to logging
-            pass
+        except Exception as err:
+            try:
+                self.db_session.rollback()
+            except Exception:
+                pass
+            # TEMP while validating: print to stderr so you see handler failures
+            import sys
+            print(f"[DBLogHandler] failed to write ErrorLog: {err}", file=sys.stderr)

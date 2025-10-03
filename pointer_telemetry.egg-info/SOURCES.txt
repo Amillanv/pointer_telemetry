@@ -3,6 +3,7 @@ setup.py
 pointer_telemetry/__init__.py
 pointer_telemetry/errorlog.py
 pointer_telemetry/context.py
+pointer_telemetry/db_log_handler.py
 pointer_telemetry.egg-info/PKG-INFO
 pointer_telemetry.egg-info/SOURCES.txt
 pointer_telemetry.egg-info/dependency_links.txt
